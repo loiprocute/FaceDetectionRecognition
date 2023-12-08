@@ -1,9 +1,12 @@
-#include "opencv2/opencv.hpp"
+﻿#include "opencv2/opencv.hpp"
 
 #include <map>
 #include <vector>
 #include <string>
+#include <fstream>
 #include <iostream>
+#include <windows.h>
+
 using namespace std;
 using namespace cv;
 
@@ -110,65 +113,278 @@ cv::Mat visualize(const cv::Mat& image, const cv::Mat& faces, float fps = -1.f)
 }
 
 
-#include <opencv2/core.hpp>
-#include <opencv2/highgui.hpp>
-#include <iostream>
-#include <fstream>
+cv::Mat visualize_w_recog(const cv::Mat& image, const cv::Mat& faces, vector<string>& recognitons, float fps = -1.f)
+{
+    static cv::Scalar box_color{ 0, 255, 0 };
+    static std::vector<cv::Scalar> landmark_color{
+        cv::Scalar(255,   0,   0), // right eye
+        cv::Scalar(0,   0, 255), // left eye
+        cv::Scalar(0, 255,   0), // nose tip
+        cv::Scalar(255,   0, 255), // right mouth corner
+        cv::Scalar(0, 255, 255)  // left mouth corner
+    };
+    static cv::Scalar text_color{ 0, 255, 0 };
 
-// Function to save a vector of cv::Mat to a file
-void saveMatVector(const std::vector<cv::Mat>& matVector, const std::string& filename) {
-    std::ofstream file(filename, std::ios::binary);
-    if (file.is_open()) {
-        int vectorSize = static_cast<int>(matVector.size());
-        file.write(reinterpret_cast<const char*>(&vectorSize), sizeof(int));
+    auto output_image = image.clone();
 
-        for (const cv::Mat& mat : matVector) {
-            int rows = mat.rows;
-            int cols = mat.cols;
-            int type = mat.type();
+    if (fps >= 0)
+    {
+        cv::putText(output_image, cv::format("FPS: %.2f", fps), cv::Point(0, 15), cv::FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2);
+    }
 
-            file.write(reinterpret_cast<const char*>(&rows), sizeof(int));
-            file.write(reinterpret_cast<const char*>(&cols), sizeof(int));
-            file.write(reinterpret_cast<const char*>(&type), sizeof(int));
-            file.write(reinterpret_cast<const char*>(mat.data), mat.total() * mat.elemSize());
+    for (int i = 0; i < faces.rows; ++i)
+    {
+        // Draw bounding boxes
+        int x1 = static_cast<int>(faces.at<float>(i, 0));
+        int y1 = static_cast<int>(faces.at<float>(i, 1));
+        int w = static_cast<int>(faces.at<float>(i, 2));
+        int h = static_cast<int>(faces.at<float>(i, 3));
+        cv::rectangle(output_image, cv::Rect(x1, y1, w, h), box_color, 2);
+
+        // Confidence as text
+        float conf = faces.at<float>(i, 14);
+        cv::putText(output_image, cv::format("%.4f", conf), cv::Point(x1, y1 + 12), cv::FONT_HERSHEY_DUPLEX, 0.5, text_color);
+
+        //Recongize as Text
+        string label = recognitons[i];
+        cv::putText(output_image, label, cv::Point(x1+w, y1 + h), cv::FONT_HERSHEY_DUPLEX, 0.5, text_color);
+        
+        // Draw landmarks
+        for (int j = 0; j < landmark_color.size(); ++j)
+        {
+            int x = static_cast<int>(faces.at<float>(i, 2 * j + 4)), y = static_cast<int>(faces.at<float>(i, 2 * j + 5));
+            cv::circle(output_image, cv::Point(x, y), 2, landmark_color[j], 2);
         }
+    }
+    return output_image;
+}
 
-        file.close();
-        std::cout << "Vector of Mats has been saved to the file successfully!" << std::endl;
+std::vector<std::string> readFromFile(const std::string& filename) {
+    std::ifstream file(filename); // M? file
+    std::vector<std::string> result; // Vector ?? l?u d? li?u t? file
+
+    if (file.is_open()) { // Ki?m tra xem file m? th�nh c�ng ch?a
+        std::string line;
+        while (std::getline(file, line)) { // ??c t?ng d�ng t? file
+            result.push_back(line); // Th�m d�ng v�o vector
+        }
+        file.close(); // ?�ng file sau khi ?� ??c xong
     }
     else {
-        std::cerr << "Could not open the file to save data!" << std::endl;
+        std::cerr << "Unable to open file: " << filename << std::endl;
+    }
+
+    return result;
+}
+
+
+// Function to find the most frequent element in a vector of strings
+std::string mostFrequentElement(const std::vector<std::string>& vec) {
+    std::unordered_map<std::string, int> freqMap;
+
+    // Count occurrences of each string in the vector
+    for (const std::string& str : vec) {
+        freqMap[str]++;
+    }
+
+    // Find the string with the maximum occurrences
+    std::string mostFrequent;
+    int maxFrequency = 0;
+
+    for (const auto& pair : freqMap) {
+        if (pair.second > maxFrequency) {
+            mostFrequent = pair.first;
+            maxFrequency = pair.second;
+        }
+    }
+
+    return mostFrequent;
+}
+
+
+string get_recognition(cv::flann::Index& index, std::vector<std::string>& labels, Mat& feature) {
+
+
+    int k = 3;
+    cv::Mat indicesMat;
+    cv::Mat distsMat;
+
+    vector<string> filter_path;
+    //std::cout << "feature: " << feature.size() << std::endl;
+    //std::cout << "indicesMat: " << indicesMat.size() << std::endl;
+    //std::cout << "distsMat: " << distsMat.size() << std::endl;
+
+    index.knnSearch(feature, indicesMat, distsMat, k, cv::flann::SearchParams());
+
+    //cout << indicesMat.rows << endl;
+    for (int i = 0; i < indicesMat.rows; ++i) {
+        for (int j = 0; j < k; ++j) {
+            float dist = distsMat.at<float>(i, j);
+            if (dist < 70) {
+                int idx = indicesMat.at<int>(i, j);
+                cout << labels[idx] << " - score : " << dist << endl;
+                filter_path.push_back(labels[idx]);
+            }
+            
+        }
+    }
+    if (filter_path.size() == 0) {
+        return "unknow";
+    }
+    std::string mostFrequent = mostFrequentElement(filter_path);
+    return mostFrequent;
+
+
+}
+
+std::tuple<cv::Mat, std::vector<std::string>> get_feature(YuNet detector, Ptr<FaceRecognizerSF> faceRecognizer, cv::flann::Index& index, std::vector<std::string>& labels, Mat image) {
+    //auto image = cv::imread(input_path);
+    // Inference
+    detector.setInputSize(image.size());
+    vector<string> recognitons;
+    auto faces = detector.infer(image);
+
+    if (faces.rows == 0) {
+        cv::Mat emptyMat;
+        return std::make_tuple(emptyMat, recognitons);
+    }
+    else {
+        for (int i = 0; i < faces.rows; i++) {
+            Mat aligned_face;
+            faceRecognizer->alignCrop(image, faces.row(0), aligned_face);
+            // Run feature extraction with given aligned_face
+            Mat feature;
+            faceRecognizer->feature(aligned_face, feature);
+            recognitons.push_back(get_recognition(index, labels, feature));
+
+        }
+        return std::make_tuple(faces, recognitons);
     }
 }
 
-// Function to load a vector of cv::Mat from a file
-std::vector<cv::Mat> loadMatVector(const std::string& filename) {
-    std::vector<cv::Mat> matVector;
 
-    std::ifstream file(filename, std::ios::binary);
-    if (file.is_open()) {
-        int vectorSize;
-        file.read(reinterpret_cast<char*>(&vectorSize), sizeof(int));
 
-        for (int i = 0; i < vectorSize; ++i) {
-            int rows, cols, type;
-            file.read(reinterpret_cast<char*>(&rows), sizeof(int));
-            file.read(reinterpret_cast<char*>(&cols), sizeof(int));
-            file.read(reinterpret_cast<char*>(&type), sizeof(int));
+// Function to save a vector of cv::Mat to a file
+void saveMat(const cv::Mat mat, const std::string& filename) {
+    std::ofstream outputFile(filename, std::ios::binary);
+    if (outputFile.is_open()) {
+        int rows = mat.rows;
+        int cols = mat.cols;
+        int type = mat.type();
 
-            cv::Mat mat(rows, cols, type);
-            file.read(reinterpret_cast<char*>(mat.data), mat.total() * mat.elemSize());
-            matVector.push_back(mat);
+        outputFile.write(reinterpret_cast<char*>(&rows), sizeof(int));
+        outputFile.write(reinterpret_cast<char*>(&cols), sizeof(int));
+        outputFile.write(reinterpret_cast<char*>(&type), sizeof(int));
+
+        if (!mat.empty()) {
+            outputFile.write(reinterpret_cast<const char*>(mat.data), mat.total() * mat.elemSize());
+            std::cout << "Matrix data has been written to " << filename << " successfully!" << std::endl;
+        }
+        else {
+            std::cerr << "Matrix is empty! Cannot write data to file." << std::endl;
         }
 
-        file.close();
-        std::cout << "Vector of Mats has been loaded from the file!" << std::endl;
+        outputFile.close();
     }
     else {
-        std::cerr << "Could not open the file to read data!" << std::endl;
+        std::cerr << "Could not open the file " << filename << " for writing!" << std::endl;
+    }
+}
+
+cv::Mat readMat(const std::string& filename) {
+    std::ifstream inputFile(filename, std::ios::binary);
+    cv::Mat result;
+
+    if (inputFile.is_open()) {
+        int rows, cols, type;
+
+        inputFile.read(reinterpret_cast<char*>(&rows), sizeof(int));
+        inputFile.read(reinterpret_cast<char*>(&cols), sizeof(int));
+        inputFile.read(reinterpret_cast<char*>(&type), sizeof(int));
+
+        result.create(rows, cols, type);
+
+        if (!result.empty()) {
+            inputFile.read(reinterpret_cast<char*>(result.data), result.total() * result.elemSize());
+            std::cout << "Matrix data has been read from " << filename << " successfully!" << std::endl;
+        }
+        else {
+            std::cerr << "Failed to create matrix for data reading!" << std::endl;
+        }
+
+        inputFile.close();
+    }
+    else {
+        std::cerr << "Could not open the file " << filename << " for reading!" << std::endl;
     }
 
-    return matVector;
+    return result;
+}
+
+
+// Function to find files in a directory and its subdirectories
+std::tuple<std::vector<std::string>, std::vector<std::string>> FindFilesInDirectory(const std::string& directory, const std::string& subdir, const std::string& format) {
+    std::vector<std::string> filePaths;
+    std::vector<std::string> subdirs;
+    WIN32_FIND_DATAA fileData;
+    //std::string searchPath = directory + "\\*.jpg"; // Path to .jpg files
+    std::string searchPath = directory + format; // Path to .jpg files
+    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &fileData);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            std::string fileName = fileData.cFileName;
+            if ((fileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                filePaths.push_back(directory + "\\" + fileName);
+                subdirs.push_back(subdir);
+            }
+        } while (FindNextFileA(hFind, &fileData) != 0);
+        FindClose(hFind);
+    }
+
+    return std::make_tuple(filePaths, subdirs);
+}
+
+// Function to find files in the Database directory and its subdirectories
+std::tuple<std::vector<std::string>, std::vector<std::string>> FindFilesInDatabaseDirectory(const std::string& format) {
+    std::vector<std::string> allFilePaths;
+    std::vector<std::string> allSubfolder;
+    std::string databaseDirectory = "Database"; // Path to the Database directory
+    WIN32_FIND_DATAA dirData;
+    std::string searchDirPath = databaseDirectory + "\\*";
+
+    HANDLE hDir = FindFirstFileA(searchDirPath.c_str(), &dirData);
+    if (hDir != INVALID_HANDLE_VALUE) {
+        do {
+            if ((dirData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                strcmp(dirData.cFileName, ".") != 0 &&
+                strcmp(dirData.cFileName, "..") != 0) {
+
+                std::string subdirPath = databaseDirectory + "\\" + dirData.cFileName;
+                auto filesAndSubdirs = FindFilesInDirectory(subdirPath, dirData.cFileName, format);
+                std::vector<std::string> filesInSubdir = std::get<0>(filesAndSubdirs);
+                std::vector<std::string> subdir = std::get<1>(filesAndSubdirs);
+                allFilePaths.insert(allFilePaths.end(), filesInSubdir.begin(), filesInSubdir.end());
+                allSubfolder.insert(allSubfolder.end(), subdir.begin(), subdir.end());
+            }
+        } while (FindNextFileA(hDir, &dirData) != 0);
+        FindClose(hDir);
+    }
+
+    return std::make_tuple(allFilePaths, allSubfolder);
+}
+
+// Function to convert a vector of cv::Mat to a single cv::Mat by concatenating vertically (along rows)
+cv::Mat convertMatVectorToMat(const std::vector<cv::Mat>& matVector) {
+    cv::Mat result;
+
+    if (matVector.empty()) {
+        std::cerr << "Input vector is empty!" << std::endl;
+        return result;
+    }
+
+    cv::vconcat(matVector, result); // Vertical concatenation
+
+    return result;
 }
 
 
@@ -184,7 +400,7 @@ int main(int argc, char** argv)
         "{save s            | false                             | Whether to save result image or not}"
         "{vis v             | false                             | Whether to visualize result image or not}"
         /* model params below*/
-        "{conf_threshold    | 0.9                               | Set the minimum confidence for the model to identify a face. Filter out faces of conf < conf_threshold}"
+        "{conf_threshold    | 0.8                               | Set the minimum confidence for the model to identify a face. Filter out faces of conf < conf_threshold}"
         "{nms_threshold     | 0.3                               | Set the threshold to suppress overlapped boxes. Suppress boxes if IoU(box1, box2) >= nms_threshold, the one of higher score is kept.}"
         "{top_k             | 5000                              | Keep top_k bounding boxes before NMS. Set a lower value may help speed up postprocessing.}"
     );
@@ -210,77 +426,68 @@ int main(int argc, char** argv)
 
     // Instantiate YuNet
     YuNet model(model_path, cv::Size(320, 320), conf_threshold, nms_threshold, top_k, backend_id, target_id);
+    Ptr<FaceRecognizerSF> faceRecognizer = FaceRecognizerSF::create("resources/face_recognition_sface_2021dec.onnx", "");
 
-    // If input is an image
-    if (!input_path.empty())
+
+    //Load database vector Embedding
+    auto Browser_folder = FindFilesInDatabaseDirectory("\\*.bin");
+    std::vector<std::string> filePaths = std::get<0>(Browser_folder);
+    std::vector<std::string> subfolders = std::get<1>(Browser_folder);
+    std::vector<cv::Mat> loadedMatVector;
+
+    //std::cout << "Files found:" << std::endl;
+    for (size_t i = 0; i < filePaths.size(); ++i) {
+    cv:Mat feature = readMat(filePaths[i]);
+        loadedMatVector.push_back(feature.clone());
+    }
+
+    cv::Mat dataset = convertMatVectorToMat(loadedMatVector);
+    cv::flann::Index index(dataset, cv::flann::KDTreeIndexParams());
+
+    int device_id = 0;
+    auto cap = cv::VideoCapture(device_id);
+    int w = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+    int h = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+    model.setInputSize(cv::Size(w, h));
+
+    auto tick_meter = cv::TickMeter();
+    cv::Mat frame;
+    while (cv::waitKey(1) < 0)
     {
-        auto image = cv::imread(input_path);
+        bool has_frame = cap.read(frame);
+        if (!has_frame)
+        {
+            std::cout << "No frames grabbed! Exiting ...\n";
+            break;
+        }
 
         // Inference
-        model.setInputSize(image.size());
-        auto faces = model.infer(image);
+        tick_meter.start();
+        auto feature_detection = get_feature(model, faceRecognizer, index, subfolders, frame);
+        auto faces = std::get<0>(feature_detection);
+        auto recoginitions = std::get<1>(feature_detection);
+        tick_meter.stop();
+        // Draw results on the input image
+        auto res_image = visualize_w_recog(frame, faces, recoginitions, (float)tick_meter.getFPS());
+        // Visualize in a new window
+        cv::imshow("YuNet Demo", res_image);
+        tick_meter.reset();
 
-        // Print faces
-        std::cout << cv::format("%d faces detected:\n", faces.rows);
-        for (int i = 0; i < faces.rows; ++i)
-        {
-            int x1 = static_cast<int>(faces.at<float>(i, 0));
-            int y1 = static_cast<int>(faces.at<float>(i, 1));
-            int w = static_cast<int>(faces.at<float>(i, 2));
-            int h = static_cast<int>(faces.at<float>(i, 3));
-            float conf = faces.at<float>(i, 14);
-            std::cout << cv::format("%d: x1=%d, y1=%d, w=%d, h=%d, conf=%.4f\n", i, x1, y1, w, h, conf);
-        }
+        // // Inference
+        //tick_meter.start();
+        //auto faces = model.infer(frame);
+        //tick_meter.stop();
+        //// Draw results on the input image
+        //auto res_image = visualize(frame, faces,(float)tick_meter.getFPS());
+        //// Visualize in a new window
+        //cv::imshow("YuNet Demo", res_image);
 
-        // Draw reults on the input image
-        if (save_flag || vis_flag)
-        {
-            auto res_image = visualize(image, faces);
-            if (save_flag)
-            {
-                std::cout << "Results are saved to result.jpg\n";
-                cv::imwrite("result.jpg", res_image);
-            }
-            if (vis_flag)
-            {
-                cv::namedWindow(input_path, cv::WINDOW_AUTOSIZE);
-                cv::imshow(input_path, res_image);
-                cv::waitKey(0);
-            }
-        }
+        tick_meter.reset();
     }
-    else // Call default camera
-    {
-        int device_id = 0;
-        auto cap = cv::VideoCapture(device_id);
-        int w = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-        int h = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-        model.setInputSize(cv::Size(w, h));
 
-        auto tick_meter = cv::TickMeter();
-        cv::Mat frame;
-        while (cv::waitKey(1) < 0)
-        {
-            bool has_frame = cap.read(frame);
-            if (!has_frame)
-            {
-                std::cout << "No frames grabbed! Exiting ...\n";
-                break;
-            }
 
-            // Inference
-            tick_meter.start();
-            cv::Mat faces = model.infer(frame);
-            tick_meter.stop();
-
-            // Draw results on the input image
-            auto res_image = visualize(frame, faces, (float)tick_meter.getFPS());
-            // Visualize in a new window
-            cv::imshow("YuNet Demo", res_image);
-
-            tick_meter.reset();
-        }
-    }
 
     return 0;
 }
+
+
